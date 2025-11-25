@@ -1,2 +1,0 @@
-merchant,category,amt,gender,city,zip,city_pop,job,merch_lat,merch_long,hour,day,month,year,day_of_week,is_weekend,amt_log,merchant_freq,amt_category,merchant_city,pred_is_fraud,trans_num,current_time,is_fraud_ground_truth
-0,0,5.79,0,0,72513,2856,0,36.611926,-92.520185,10,18,12,2013,2,0,1.9154509415706047,1.0,0.0,0,0,118f0a25e7c1fa281dbced6e920d0113,1387363675000,0

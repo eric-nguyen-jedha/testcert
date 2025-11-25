@@ -1,2 +1,0 @@
-cc_num,merchant,category,amt,first,last,gender,street,city,state,zip,lat,long,city_pop,job,dob,trans_num,merch_lat,merch_long,is_fraud,current_time
-30011465039817,"fraud_Stanton, Jakubowski and Baumbach",shopping_net,893.98,Lisa,Garcia,F,213 Gill Expressway,Chatham,NY,12037,42.3496,-73.5873,4015,Human resources officer,1971-10-14,c09693e5d438f0e20a28b771f7fe91aa,41.670306,-73.996136,1,1380935537000
