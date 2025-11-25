@@ -1,0 +1,2 @@
+merchant,category,amt,gender,city,zip,city_pop,job,trans_num,merch_lat,merch_long,is_fraud,current_time,hour,day,month,year,day_of_week,is_weekend,amt_log,merchant_freq,amt_category,merchant_city,is_fraud_ground_truth
+"Stanton, Jakubowski and Baumbach",shopping_net,893.98,F,Chatham,12037,4015,Human resources officer,c09693e5d438f0e20a28b771f7fe91aa,41.670306,-73.996136,1,1380935537000,1,5,10,2013,5,1,6.796801371656456,1.0,0.0,"Stanton, Jakubowski and Baumbach_Chatham",1
