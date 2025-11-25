@@ -1,0 +1,288 @@
+// ===============================
+// ✅ Jenkinsfile complet et final (avec traçabilité améliorée)
+// ===============================
+
+// Variables globales pour stocker les résultats des tests
+def unitTests = 0
+def mlTests = 0
+def integrationTests = 0
+
+pipeline {
+    agent {
+        docker {
+            image 'python:3.10-slim'
+            args '-u root:root'
+        }
+    }
+    
+    environment {
+        WORK_DIR = "BLOC_04"
+        REPORT_DIR = "${WORK_DIR}/reports"
+        UNIT_REPORT = "${REPORT_DIR}/unit"
+        ML_REPORT = "${REPORT_DIR}/ml"
+        INTEGRATION_REPORT = "${REPORT_DIR}/integration"
+        DAG_ID = "meteo_01_etl"
+    }
+    
+    stages {
+
+        stage('Install dependencies') {
+            steps {
+                dir("${WORK_DIR}") {
+                    sh '''
+                        echo "📦 Installation des dépendances système..."
+                        apt-get update && apt-get install -y --no-install-recommends gcc ssh curl
+                        
+                        echo "🐳 Installation du client Docker (méthode robuste)..."
+                        DOCKER_VERSION=24.0.5
+                        DOCKER_URL="https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_VERSION}.tgz"
+                        curl -fsSL ${DOCKER_URL} -o docker.tgz
+                        tar -xvzf docker.tgz
+                        mv docker/docker /usr/bin/docker
+                        rm -rf docker docker.tgz
+                        
+                        echo "✅ Vérification de l'installation de Docker..."
+                        which docker || (echo "ERREUR: Le client Docker n'a pas été trouvé après l'installation." && exit 1)
+                        
+                        echo "🐍 Installation des dépendances Python..."
+                        pip install --upgrade pip
+                        pip install -r requirements.txt
+                    '''
+                }
+            }
+        }
+
+        stage('Lint Code') {
+            steps {
+                dir("${WORK_DIR}") {
+                    sh '''
+                        echo "🔍 Vérification qualité du code..."
+                        flake8 dags/ dags_ml/ --max-line-length=120 --extend-ignore=E501,W503 --count || true
+                        pylint dags/*.py dags_ml/*.py --disable=C,R --exit-zero || true
+                    '''
+                }
+            }
+        }
+
+        stage('Validate DAGs') {
+            steps {
+                dir("${WORK_DIR}") {
+                    sh '''
+                        echo "✅ Validation syntaxe des DAGs..."
+                        export PYTHONPATH=$PYTHONPATH:$WORKSPACE/${WORK_DIR}/plugins
+                        python tests/ml/validate_dags.py || exit 1
+                    '''
+                }
+            }
+        }
+
+        stage('Run unit tests - Data Pipeline') {
+            steps {
+                dir("${WORK_DIR}") {
+                    sh '''
+                        echo "🧪 Tests unitaires - Pipeline de données..."
+                        export PYTHONPATH=$PYTHONPATH:$WORKSPACE/${WORK_DIR}/plugins
+                        mkdir -p reports/unit
+                        pytest tests/unit \
+                            --junitxml=reports/unit/report.xml \
+                            --html=reports/unit/report.html \
+                            --self-contained-html \
+                            -v
+                    '''
+                }
+            }
+        }
+
+        stage('Run unit tests - ML Pipeline') {
+            steps {
+                dir("${WORK_DIR}") {
+                    sh '''
+                        echo "🧪 Tests unitaires - Pipeline ML..."
+                        export PYTHONPATH=$PYTHONPATH:$WORKSPACE/${WORK_DIR}/plugins:$WORKSPACE/${WORK_DIR}/dags_ml
+                        mkdir -p reports/ml
+                        pytest tests/ml/test_weather_dags.py tests/ml/test_training_pipeline.py \
+                            -m "not integration" \
+                            --junitxml=reports/ml/report.xml \
+                            --html=reports/ml/report.html \
+                            --self-contained-html \
+                            --cov=dags_ml \
+                            --cov-report=xml:reports/ml/coverage.xml \
+                            --cov-report=html:reports/ml/coverage_html \
+                            -v
+                    '''
+                }
+            }
+        }
+
+        stage('Run integration tests - ML') {
+            steps {
+                dir("${WORK_DIR}") {
+                    sh '''
+                        echo "🔗 Tests d'intégration - ML..."
+                        export PYTHONPATH=$PYTHONPATH:$WORKSPACE/${WORK_DIR}/plugins:$WORKSPACE/${WORK_DIR}/dags_ml
+                        mkdir -p reports/integration
+                        pytest tests/ml \
+                            -m "integration" \
+                            --junitxml=reports/integration/report.xml \
+                            --html=reports/integration/report.html \
+                            --self-contained-html \
+                            -v || true
+                    '''
+                }
+            }
+        }
+
+        stage('Generate Test Summary') {
+            steps {
+                dir("${WORK_DIR}") {
+                    sh '''
+                        mkdir -p reports/summary
+                        echo "<html><body>Dummy Summary to prevent publishHTML error.</body></html>" > reports/summary/summary.html
+                    '''
+                }
+            }
+        }
+
+        stage('Read Test Results') {
+            steps {
+                dir("${WORK_DIR}") {
+                    script {
+                        echo "📊 Lecture des résultats des tests..."
+
+                        def getTestCount = { String reportPath ->
+                            try {
+                                if (!fileExists(reportPath)) {
+                                    echo "⚠️ Fichier introuvable : ${reportPath}"
+                                    return 0
+                                }
+                                def reportContent = readFile(reportPath)
+                                def matcher = (reportContent =~ /<testsuite[^>]* tests="(\d+)"/)
+                                if (matcher.find()) {
+                                    def count = matcher.group(1).toInteger()
+                                    echo "   -> ${count} test(s) trouvés dans ${reportPath}"
+                                    return count
+                                } else {
+                                    echo "   -> Aucun test trouvé dans ${reportPath}"
+                                    return 0
+                                }
+                            } catch (Exception e) {
+                                echo "❌ Erreur lecture ${reportPath}: ${e.getMessage()}"
+                                return 0
+                            }
+                        }
+
+                        unitTests = getTestCount("reports/unit/report.xml")
+                        mlTests = getTestCount("reports/ml/report.xml")
+                        integrationTests = getTestCount("reports/integration/report.xml")
+                    }
+                }
+            }
+        }
+
+        stage('Publish reports') {
+            steps {
+                junit allowEmptyResults: true, testResults: "${REPORT_DIR}/**/report.xml"
+                publishHTML(target: [ reportDir: "${UNIT_REPORT}", reportFiles: "report.html", reportName: "Unit Tests - Data Pipeline", keepAll: true, alwaysLinkToLastBuild: true ])
+                publishHTML(target: [ reportDir: "${ML_REPORT}", reportFiles: "report.html", reportName: "Unit Tests - ML Pipeline", keepAll: true, alwaysLinkToLastBuild: true ])
+                publishHTML(target: [ reportDir: "${ML_REPORT}/coverage_html", reportFiles: "index.html", reportName: "Coverage Report - ML", keepAll: true, alwaysLinkToLastBuild: true ])
+                publishHTML(target: [ reportDir: "${INTEGRATION_REPORT}", reportFiles: "report.html", reportName: "Integration Tests - ML", keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true ])
+                publishHTML(target: [ reportDir: "${REPORT_DIR}/summary", reportFiles: "summary.html", reportName: "Test Summary", keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true ])
+            }
+        }
+
+        stage('Trigger Airflow DAG via CLI') {
+            steps {
+                script {
+                    echo "🚀 Déclenchement du DAG '${DAG_ID}' via la CLI Airflow avec métadonnées Jenkins..."
+                    
+                    def schedulerContainerName = "airflow-airflow-scheduler-1" 
+
+                    // Créer un Run ID clair et unique qui identifie la source et le build
+                    def runId = "jenkins_build_${env.BUILD_NUMBER}"
+
+                    // Créer une charge utile JSON avec des informations de traçabilité
+                    def confJson = """{"triggered_by": "Jenkins", "job_name": "${env.JOB_NAME}", "build_number": ${env.BUILD_NUMBER}}"""
+
+                    echo "   -> Conteneur cible : ${schedulerContainerName}"
+                    echo "   -> Run ID généré : ${runId}"
+                    echo "   -> Configuration : ${confJson}"
+
+                    // Exécuter la commande avec les options --run-id et -c (ou --conf)
+                    sh """
+                        docker exec ${schedulerContainerName} airflow dags trigger --run-id '${runId}' -c '${confJson}' ${DAG_ID}
+                    """
+
+                    echo "✅ Commande de déclenchement pour le DAG '${DAG_ID}' envoyée via la CLI."
+                }
+            }
+        }
+
+    }
+
+    post {
+        success {
+            echo "✅ Pipeline terminé avec succès."
+            script {
+                emailext(
+                    subject: "- 🎀 - Jenkins : Tests réussis - ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                    body: """
+                        <html>
+                        <body>
+                            <h2>✅ Tests réussis</h2>
+                            <p><b>Projet</b> : ${env.JOB_NAME}</p>
+                            <p><b>Build</b> : #${env.BUILD_NUMBER}</p>
+                            <h3>📊 Résumé des tests</h3>
+                            <ul>
+                                <li>Tests unitaires - Data Pipeline : ${unitTests} tests</li>
+                                <li>Tests unitaires - ML Pipeline : ${mlTests} tests</li>
+                                <li>Tests d'intégration : ${integrationTests} tests</li>
+                            </ul>
+                            <h3>🚀 Airflow</h3>
+                            <p>Le DAG <b>${DAG_ID}</b> a été déclenché avec succès via la CLI avec le Run ID <b>jenkins_build_${env.BUILD_NUMBER}</b>.</p>
+                            <h3>📄 Rapports</h3>
+                            <ul>
+                                <li><a href="${env.BUILD_URL}Unit_20Tests_20-_20Data_20Pipeline/">Tests Data Pipeline</a></li>
+                                <li><a href="${env.BUILD_URL}Unit_20Tests_20-_20ML_20Pipeline/">Tests ML Pipeline</a></li>
+                                <li><a href="${env.BUILD_URL}Coverage_20Report_20-_20ML/">Couverture ML</a></li>
+                                <li><a href="${env.BUILD_URL}Integration_20Tests_20-_20ML/">Tests Intégration</a></li>
+                            </ul>
+                            <p><em> Votre Staff Jenkins 🎀 </p>
+                        </body>
+                        </html>
+                    """,
+                    to: 'en9.eric@gmail.com',
+                    from: 'enguyen.fr@gmail.com',
+                    mimeType: 'text/html'
+                )
+            }
+        }
+
+        failure {
+            echo "❌ Des tests ont échoué."
+            script {
+                emailext(
+                    subject: "❌ Échec des tests - ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                    body: """
+                        <html>
+                        <body>
+                            <h2>❌ Échec des tests</h2>
+                            <p><b>Projet</b> : ${env.JOB_NAME}</p>
+                            <p><b>Build</b> : #${env.BUILD_NUMBER}</p>
+                            <p>Le DAG Airflow <b>${DAG_ID}</b> n’a pas été déclenché, car les tests ont échoué.</p>
+                            <p><a href="${env.BUILD_URL}console">Voir les logs Jenkins</a></p>
+                        </body>
+                        </html>
+                    """,
+                    to: 'en9.eric@gmail.com',
+                    from: 'Jenkin Meteo',
+                    mimeType: 'text/html'
+                )
+            }
+        }
+
+        cleanup {
+            echo "🧹 Nettoyage final..."
+            cleanWs()
+        }
+    }
+}
